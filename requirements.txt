@@ -1,0 +1,23 @@
+# Installed on top of the IDRIS pytorch-gpu module, which already provides torch
+# (built against the right CUDA/NCCL for the machine). Never list torch here:
+# pip would replace the module's build with a generic wheel.
+#
+# Anything the module already satisfies is skipped, thanks to the venv being
+# created with --system-site-packages.
+scikit-learn
+matplotlib
+tabpfn
+tabicl
+# TabFM (Google): not on PyPI. No [pytorch] extra, it would pull its own torch. Needs
+# scikit-learn >= 1.6 and pins jaxtyping<0.3 / typeguard<3. JAX is not needed.
+tabfm @ git+https://github.com/google-research/tabfm.git
+# Mitra (Amazon) lives in autogluon.tabular. Do NOT install the [mitra] extra: it pins
+# torch>=2.10 and huggingface_hub>=1.3, and pip then replaces the torch of the module
+# (2.8.0) with its own build plus CUDA 13 libraries, which breaks every model. Install
+# AutoGluon without its dependencies, then the light ones Mitra needs (the rest, torch,
+# transformers, omegaconf, einops, comes from the module):
+#     pip install --no-deps "autogluon.tabular==1.6.3" "autogluon.core==1.6.3" \
+#         "autogluon.common==1.6.3" "autogluon.features==1.6.3"
+loguru
+einx
+boto3
