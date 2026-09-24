@@ -6,8 +6,12 @@ DATASETS_ALL=${DATASETS_ALL:-"breast_cancer iris wine digits"}      # datasets/d
 MODELS_ALL=${MODELS_ALL:-"tabpfn_v3 tabpfn_v2 tabicl_v2 tabicl_v1 tabfm_v1 mitra_v2 mitra_v1"}
 # The metrics computed for every run (utils/metrics.py). They all come from the same
 # embeddings, so a layer is one sweep whatever the number of metrics; a rerun only asks for
-# the metrics whose result file is still missing.
-METRICS_ALL=${METRICS_ALL:-"cosine mi cka"}
+# the metrics whose result file is still missing. To compare layers of one model on one
+# dataset, use ccos and nmi: in synthetic checks they kept the right order between layers of
+# different width and shape every time, while plain cosine inverts it when a layer has a
+# large shared mean vector and CKA (any variant) when layers differ in spectrum. dcka is
+# kept for the geometry view along one curve, where every metric orders levels correctly.
+METRICS_ALL=${METRICS_ALL:-"cosine ccos nmi dcka"}
 
 # The layers of a model. The models made of column, row and ICL stages are read after each
 # stage; the others are one stack of identical layers, read early, in the middle and at the

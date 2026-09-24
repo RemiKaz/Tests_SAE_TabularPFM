@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=sae_tabpfm
 #SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+# No --error: stderr (tracebacks, FAILED lines) goes to the --output file, in order.
 #SBATCH --account=ycq@a100          # `idrproj` lists the accounts, suffix = GPU partition
 #SBATCH -C a100                     # the A100 nodes
 # 2h max, MaxSubmitPU=10: fine for a single job like this one (starts sooner than t3), but

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=sae_tabpfm
 #SBATCH --output=logs/%x_%A_%a.out
-#SBATCH --error=logs/%x_%A_%a.err
+# No --error: stderr (tracebacks, FAILED lines) goes to the --output file, in order.
 #SBATCH --account=ycq@a100          # kept in sync with job.slurm by hand, same settings
 #SBATCH -C a100
 #SBATCH --qos=qos_gpu_a100-t3       # MaxSubmitPU=10000; the dev QOS caps it at 10

@@ -68,7 +68,9 @@ def _plot_panel(ax, result):
     if metric == "mi":
         ax.set_ylim(bottom=0)  # mutual information (nats) has no fixed upper bound
     else:
-        ax.set_ylim(0, 1.05)  # cosine and cka both stay within roughly [0, 1] in practice
+        # the others are about 1 when unchanged; dcka can dip slightly below 0 (estimation
+        # noise around 0), cosine down to -1, so the bottom follows the data when it does
+        ax.set_ylim(min(0, min(result["similarities"]) - 0.05), 1.05)
     ax.grid(True, color=GRID_COLOR, linewidth=0.8)
     ax.tick_params(colors=MUTED, labelsize=8)
     for spine in ("top", "right"):

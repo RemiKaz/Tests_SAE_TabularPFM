@@ -24,15 +24,26 @@ cd "$(dirname "$0")/.." || exit 1
 source scripts/config.sh
 mkdir -p logs
 
+# Jobs already queued or running, by name (<model>_<dataset>, set at submission below):
+# those pairs are not done on disk yet, but submitting them again would compute the same
+# layers twice in parallel.
+queued=" $(squeue -h -u "$USER" -o %j | tr '\n' ' ') "
+
 pending=()
+n_queued=0
 while read -r model dataset; do
-    if [ -n "$FORCE" ] || ! pair_is_done "$model" "$dataset"; then
-        pending+=("$model $dataset")
+    if [ -z "$FORCE" ] && pair_is_done "$model" "$dataset"; then
+        continue
     fi
+    if [[ "$queued" == *" ${model}_${dataset} "* ]]; then
+        n_queued=$((n_queued + 1))
+        continue
+    fi
+    pending+=("$model $dataset")
 done < <(all_pairs)
 
 if [ ${#pending[@]} -eq 0 ]; then
-    echo "All pairs already done, nothing to submit"
+    echo "Nothing to submit: $n_queued pair(s) already queued or running, the rest done"
     exit 0
 fi
 
@@ -55,7 +66,7 @@ for pair in "${pending[@]}"; do
     n=$((n + 1))
 done
 
-echo "$n submitted (${#pending[@]} pairs still not fully done, $in_flight already in flight, cap $MAX_SUBMIT)"
+echo "$n submitted, $((${#pending[@]} - n)) left to submit later, $n_queued pair(s) already queued or running (cap $MAX_SUBMIT jobs)"
 if [ "$n" -lt "${#pending[@]}" ]; then
     echo "Rerun once these clear (squeue -u \$USER) to submit the rest"
 fi

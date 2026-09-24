@@ -18,6 +18,20 @@ import numpy as np
 from sklearn.feature_selection import mutual_info_regression
 
 
+def _as_rows(embeds, baseline, name):
+    """Both embeddings as (n_test, dim) float arrays, refusing shapes the sample-based
+    metrics would silently get wrong (e.g. a leading ensemble axis read as one sample)."""
+    embeds, baseline = np.asarray(embeds, dtype=np.float64), np.asarray(baseline, dtype=np.float64)
+    if embeds.shape != baseline.shape or embeds.ndim != 2:
+        raise ValueError(
+            f"{name} needs two (n_test, dim) embeddings of the same shape, got "
+            f"{embeds.shape} and {baseline.shape}"
+        )
+    if len(embeds) < 4:
+        raise ValueError(f"{name} needs at least 4 test rows as its sample, got {len(embeds)}")
+    return embeds, baseline
+
+
 def cosine_sim_to_baseline(embeds, baseline):
     """Cosine similarity between two sets of embeddings, computed on the last axis.
 
@@ -38,6 +52,23 @@ def cosine_sim_to_baseline(embeds, baseline):
 def cosine_metric(embeds, baseline):
     """The `cosine_sim_to_baseline` per-row values, reduced to one float by averaging."""
     return float(cosine_sim_to_baseline(embeds, baseline).mean())
+
+
+def ccos_metric(embeds, baseline):
+    """Centered cosine: cosine similarity after subtracting the baseline's mean embedding
+    from both, per test row, then averaged.
+
+    Transformer layers often give every sample a large shared component (the same mean
+    vector for all rows). Plain cosine is dominated by it: a layer with a big shared mean
+    reads as nearly unchanged whatever happens to the part that differs between samples,
+    so comparing cosine across layers can invert their order (a layer with a shared mean
+    and more damage read as more invariant than a centered one with less, in every
+    synthetic trial). Removing the baseline mean, the same reference for both embeddings,
+    measures how each sample's own position moved, which is what differs between layers.
+    """
+    embeds, baseline = _as_rows(embeds, baseline, "ccos")
+    mean = baseline.mean(axis=0)
+    return cosine_metric(embeds - mean, baseline - mean)
 
 
 # Embedding dimensions are typically in the dozens to hundreds; mi_metric fits one k-NN
@@ -78,8 +109,7 @@ def mi_metric(embeds, baseline, max_dims=MI_MAX_DIMS, seed=0):
     Returns:
         float: The per-dimension MI, averaged over the dimensions used.
     """
-    embeds = np.asarray(embeds).reshape(len(embeds), -1)
-    baseline = np.asarray(baseline).reshape(len(baseline), -1)
+    embeds, baseline = _as_rows(embeds, baseline, "mi")
     dim = baseline.shape[1]
 
     dims = range(dim)
@@ -93,6 +123,55 @@ def mi_metric(embeds, baseline, max_dims=MI_MAX_DIMS, seed=0):
         mutual_info_regression(baseline[:, [d]], embeds[:, d], random_state=seed)[0] for d in dims
     ]
     return float(np.mean(per_dim))
+
+
+def nmi_metric(embeds, baseline, max_dims=MI_MAX_DIMS, seed=0):
+    """`mi_metric` divided by the baseline's MI with itself, per dimension: the fraction of
+    each dimension's information the perturbed embedding still carries, 1 when unchanged.
+
+    The k-NN estimator cannot return an infinite MI for a variable against itself: it tops
+    out near log(n_test), so raw `mi` values have a ceiling set by the test-set size (about
+    2.6 nats on iris against 3.6 on digits), not by the embeddings. Dividing each dimension
+    by that ceiling, measured on the baseline itself, removes it, so curves can be compared
+    across datasets. Dimensions constant over the test set carry no information and are
+    left out (their ratio is undefined).
+
+    Args:
+        embeds (np.ndarray): The perturbed embeddings, shape (n_test, dim).
+        baseline (np.ndarray): The unperturbed embeddings, same shape as `embeds`.
+        max_dims (int, optional): As in `mi_metric`. Defaults to MI_MAX_DIMS.
+        seed (int, optional): As in `mi_metric`. Defaults to 0.
+
+    Returns:
+        float: The per-dimension normalized MI, averaged over the informative dimensions.
+    """
+    embeds, baseline = _as_rows(embeds, baseline, "nmi")
+    dim = baseline.shape[1]
+    dims = np.arange(dim)
+    if dim > max_dims:
+        dims = np.random.default_rng(seed).choice(dim, size=max_dims, replace=False)
+
+    ratios = []
+    for d in dims:
+        ceiling = _self_mi(baseline[:, d], seed)
+        if ceiling <= 0:
+            continue
+        mi = mutual_info_regression(baseline[:, [d]], embeds[:, d], random_state=seed)[0]
+        ratios.append(mi / ceiling)
+    return float(np.mean(ratios)) if ratios else 0.0
+
+
+# The baseline is the same at every level of an experiment, so its self-MI is cached.
+_SELF_MI_CACHE = {}
+
+
+def _self_mi(column, seed):
+    key = (column.tobytes(), seed)
+    if key not in _SELF_MI_CACHE:
+        if len(_SELF_MI_CACHE) > 100_000:
+            _SELF_MI_CACHE.clear()
+        _SELF_MI_CACHE[key] = mutual_info_regression(column[:, None], column, random_state=seed)[0]
+    return _SELF_MI_CACHE[key]
 
 
 def _pairwise_sq_dists(X):
@@ -123,6 +202,44 @@ def _hsic(K, L):
     return float(np.sum(_center_gram(K) * _center_gram(L)) / (n - 1) ** 2)
 
 
+def _hsic_unbiased(K, L):
+    """Unbiased HSIC estimator (Song et al. 2012) of two Gram matrices K, L."""
+    n = K.shape[0]
+    K, L = K.copy(), L.copy()
+    np.fill_diagonal(K, 0)
+    np.fill_diagonal(L, 0)
+    ones = np.ones(n)
+    Lsum_rows = L @ ones
+    term = np.sum(K * L) + (K.sum() * L.sum()) / ((n - 1) * (n - 2)) - 2 / (n - 2) * (ones @ K @ Lsum_rows)
+    return float(term / (n * (n - 3)))
+
+
+def dcka_metric(embeds, baseline):
+    """Debiased CKA: `cka_metric` with the unbiased HSIC estimator in place of the biased one.
+
+    The biased estimator behind `cka_metric` reads two completely independent embeddings
+    as similar when the embedding is wide against the number of test rows (independent
+    Gaussian embeddings: 0.78 at 50 rows x 64 dims, 0.99 at 188 rows x 4096 dims), so its
+    floor changes from one dataset and layer to the next. The unbiased estimator removes
+    that: independent embeddings read about 0 at any size, identical ones still exactly 1.
+    It can come out slightly negative (estimation noise around 0). This is the "debiased
+    CKA" of Kornblith et al.'s own code (Nguyen et al. 2021).
+
+    Args:
+        embeds (np.ndarray): The perturbed embeddings, shape (n_test, dim).
+        baseline (np.ndarray): The unperturbed embeddings, same shape as `embeds`.
+
+    Returns:
+        float: The debiased CKA similarity, about 0 for independent, 1 for identical.
+    """
+    embeds, baseline = _as_rows(embeds, baseline, "dcka")
+    K, L = _rbf_gram(baseline), _rbf_gram(embeds)
+    hsic_xy, hsic_xx, hsic_yy = _hsic_unbiased(K, L), _hsic_unbiased(K, K), _hsic_unbiased(L, L)
+    if hsic_xx <= 0 or hsic_yy <= 0:
+        return 0.0
+    return hsic_xy / np.sqrt(hsic_xx * hsic_yy)
+
+
 def cka_metric(embeds, baseline):
     """Centered Kernel Alignment (CKA) between baseline and perturbed embeddings.
 
@@ -145,8 +262,7 @@ def cka_metric(embeds, baseline):
     Returns:
         float: The CKA similarity, in [0, 1].
     """
-    embeds = np.asarray(embeds, dtype=np.float64).reshape(len(embeds), -1)
-    baseline = np.asarray(baseline, dtype=np.float64).reshape(len(baseline), -1)
+    embeds, baseline = _as_rows(embeds, baseline, "cka")
 
     K, L = _rbf_gram(baseline), _rbf_gram(embeds)
     hsic_xy, hsic_xx, hsic_yy = _hsic(K, L), _hsic(K, K), _hsic(L, L)
@@ -155,11 +271,21 @@ def cka_metric(embeds, baseline):
 
 
 # The --metric CLI choices, each mapped to a (embeds, baseline) -> float callable.
-METRICS = {"cosine": cosine_metric, "mi": mi_metric, "cka": cka_metric}
+METRICS = {
+    "cosine": cosine_metric,
+    "ccos": ccos_metric,
+    "mi": mi_metric,
+    "nmi": nmi_metric,
+    "cka": cka_metric,
+    "dcka": dcka_metric,
+}
 
 # What each metric's numbers mean, for the plot axis label.
 METRIC_LABELS = {
     "cosine": "Cosine similarity to baseline",
     "mi": "Mutual information with baseline (nats, per dim)",
-    "cka": "CKA similarity to baseline",
+    "ccos": "Centered cosine similarity to baseline",
+    "nmi": "Normalized mutual information with baseline",
+    "cka": "CKA similarity to baseline (biased)",
+    "dcka": "Debiased CKA similarity to baseline",
 }

@@ -1,13 +1,53 @@
+import os
+
+import numpy as np
 from sklearn import datasets as sklearn_datasets
 
 from datasets.tabular_dataset import TabularDataset
 
-# sklearn loaders usable as-is, i.e. returning a (X, y) classification problem.
+
+def _data_home():
+    """Where downloaded datasets are cached: $SCIKIT_LEARN_DATA, else $WORK/scikit_learn_data
+    (the home quota on Jean Zay is small), else sklearn's own default."""
+    if os.environ.get("SCIKIT_LEARN_DATA"):
+        return os.environ["SCIKIT_LEARN_DATA"]
+    if os.environ.get("WORK"):
+        return os.path.join(os.environ["WORK"], "scikit_learn_data")
+    return sklearn_datasets.get_data_home()
+
+
+def _openml_loader(name, data_id):
+    """A loader with the sklearn `load_*` signature for an all-numeric OpenML dataset.
+
+    The first call downloads it (needs internet: run `python down_weight.py` on a login
+    node, the compute nodes have none) and caches X and the integer-encoded labels as one
+    .npz; every later call reads that file only. Labels are encoded 0..n_classes-1 because
+    OpenML stores them as strings and Mitra's code needs integers.
+    """
+
+    def load(return_X_y=True, data_home=None):
+        path = os.path.join(data_home or _data_home(), f"{name}.npz")
+        if not os.path.exists(path):
+            X, y = sklearn_datasets.fetch_openml(
+                data_id=data_id, return_X_y=True, as_frame=False, data_home=data_home or _data_home()
+            )
+            _, y = np.unique(y, return_inverse=True)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            np.savez(path, X=X.astype(np.float64), y=y.astype(np.int64))
+        data = np.load(path)
+        return data["X"], data["y"]
+
+    return load
+
+
+# Loaders returning a (X, y) classification problem: sklearn's bundled datasets, and
+# all-numeric OpenML ones (downloaded once, see _openml_loader).
 SKLEARN_LOADERS = {
     "breast_cancer": sklearn_datasets.load_breast_cancer,
     "iris": sklearn_datasets.load_iris,
     "wine": sklearn_datasets.load_wine,
     "digits": sklearn_datasets.load_digits,
+    "phoneme": _openml_loader("phoneme", data_id=1489),  # 5404 rows, 5 features, 2 classes
 }
 
 

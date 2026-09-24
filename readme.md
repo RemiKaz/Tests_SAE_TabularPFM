@@ -25,7 +25,7 @@ python run_exps.py --model tabpfn_v3 --dataset breast_cancer --exp perturbations
 
 Every run writes `results/<model>_<dataset>_<exp>_layer-<layer>/`, where `<model>` includes the
 version (`tabpfn_v3`, `tabpfn_v2`, `tabicl_v2`, `tabicl_v1`, `tabfm_v1`, `mitra_v1`, `mitra_v2`), with a json file of the
-raw curves and the matching figure. `--metric mi`/`cka` add a `_metric-<metric>` suffix to
+raw curves and the matching figure. Any other `--metric` adds a `_metric-<metric>` suffix to
 that name, so they never collide with or overwrite a `cosine` run of the same layer;
 `cosine` itself is left unsuffixed, matching every result computed before `--metric` existed.
 
@@ -35,7 +35,7 @@ that name, so they never collide with or overwrite a `cosine` run of the same la
 | `--dataset` | `breast_cancer`, `iris`, `wine`, `digits` | `breast_cancer` |
 | `--exp` | one experiment or a group (see below) | `perturbations` |
 | `--layer` | `last`, an index in the layer stack, or a dotted submodule name | `last` |
-| `--metric` | `cosine`, `mi`, `cka` (see `utils/metrics.py`) | `cosine` |
+| `--metric` | `cosine`, `ccos`, `nmi`, `dcka` (also `mi`, `cka`, see `utils/metrics.py`) | `cosine` |
 | `--n_levels` | number of perturbation intensities swept | `20` |
 | `--seed` / `--split_seed` | perturbation seed / train-test split seed | `0` / `42` |
 | `--eval` | also report accuracy and ROC AUC on the clean data | off |
@@ -64,10 +64,35 @@ that name, so they never collide with or overwrite a `cosine` run of the same la
   CKA > 0 (noticeably so at a few hundred test rows), tightening toward 0 only as the test
   set grows - this is the standard, literature-conventional CKA estimator, not a bug.
 
-`--metric` takes several values (`--metric cosine mi cka`): they are all computed from the
+Use `nmi` and `dcka` rather than `mi` and `cka` (kept for the results already computed):
+
+- `nmi`: `mi` divided by the baseline's MI with itself, per dimension. Raw `mi` tops out near
+  log(n_test) for unchanged embeddings (2.6 nats on iris, 3.6 on digits), a ceiling set by the
+  estimator, not the embeddings; `nmi` is 1 when unchanged, whatever the dataset. It is the
+  most sensitive metric to small changes (1 % of noise already brings it to ~0.55).
+- `dcka`: CKA with the unbiased HSIC estimator. The biased `cka` reads two independent
+  embeddings as similar when they are wide against n_test (0.78 at 50 rows x 64 dims, 0.99 at
+  188 x 4096), so its floor shifts from one dataset and layer to the next; `dcka` stays about 0
+  for independent embeddings (slightly negative is estimation noise) and 1 for identical ones.
+
+**Comparing layers of one model on one dataset** (the fused plots): use `ccos` and `nmi`
+(or `mi`, same order within a dataset). In synthetic checks with a known answer they kept
+the right order between layers of different width and shape every time. Plain `cosine`
+inverted it whenever a layer had a large mean vector shared by all samples (common in
+transformers); `ccos` subtracts the baseline mean first and does not. `cka` and `dcka`
+(also with a linear kernel) inverted it when layers differed in width: CKA is dominated by
+the top principal directions, so its value for the same damage depends on the layer's
+spectrum. Along one curve (one layer, increasing levels) every metric orders correctly.
+
+What each one measures: `cosine` whether each sample keeps its own embedding (the most
+literal "how much did it move"); `dcka` whether the geometry among samples is kept (blind to a
+rotation, rescaling or sign flip of the whole space); `nmi` whether each dimension still
+carries the same information (blind to rescaling or a sign flip, not to a rotation).
+
+`--metric` takes several values (`--metric cosine nmi dcka`): they are all computed from the
 same embeddings in one sweep, and each is saved to its own result folder. The campaign
 scripts (`scripts/all_runs*.sh`) compute every metric of `METRICS_ALL` (in
-`scripts/config.sh`, default `cosine mi cka`), and for each layer only ask for the metrics
+`scripts/config.sh`, default `cosine ccos nmi dcka`), and for each layer only ask for the metrics
 whose result is still missing, so existing results are never recomputed.
 
 `fuse_plot.py` also takes `--metric` (default: `cosine` for a single plot, every metric found

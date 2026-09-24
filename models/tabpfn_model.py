@@ -81,5 +81,11 @@ class TabPFN(BaseTabularPFM):
         return model
 
     def _native_embeddings(self, X_test):
-        return np.asarray(self.clf.get_embeddings(X_test))
+        embeddings = np.asarray(self.clf.get_embeddings(X_test))
+        if embeddings.ndim == 3:
+            # TabPFN returns (n_estimators, n_test, dim): average the ensemble members, as the
+            # hooked layers do, so every layer hands the metrics one (n_test, dim) matrix. With
+            # n_estimators=1 this is the same numbers, so cosine results are unchanged.
+            embeddings = embeddings.mean(axis=0)
+        return embeddings
 
